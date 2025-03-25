@@ -1,0 +1,5 @@
+- [x] generate integer rules in Enumo
+- [x] parse enumo rules and lift named rules to PyPy DSL
+- [ ] test new rules with existing PyPy RPython rule generator
+- [ ] autogenerate AEgraph python implementation with smart constructors
+- [ ] update rule application in PyPy `optimizeopt` to use AEgraph implementation
