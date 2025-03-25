@@ -42,9 +42,9 @@ def lift_rule(s_expression: str) -> str:
     rhs_parsed = parse_expression(rhs.strip())
     name = "_".join(operators_and_consts)
     if bi_dir:
-        rule = f"{name} : {lhs_parsed} <=> {rhs_parsed}"
+        rule = f"{name} : {lhs_parsed} => {rhs_parsed}\n{name} : {rhs_parsed} => {lhs_parsed}"
     else:
-        rule = f"{name} : {lhs_parsed} ==> {rhs_parsed}"
+        rule = f"{name} : {lhs_parsed} => {rhs_parsed}"
     return rule
 
 
