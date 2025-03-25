@@ -1,0 +1,1 @@
+rm nohup.out && nohup time cargo test --package ruler --test pypy_int -- test::run --exact --show-output 
