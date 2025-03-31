@@ -48,7 +48,7 @@ class CouldNotProve(ProofProblem):
                 detail.append("bounds for %s: %s" % (name, realbound))
             res.append("%s: %s" % (name, model[prover.name_to_z3[name]].as_signed_long()))
         res.append("operation %s with Z3 formula %s" % (rule.pattern, self.lhs))
-        res.append("has counterexample result vale: %s" % (model.evaluate(self.lhs).as_signed_long(), ))
+        res.append("has counterexample result value: %s" % (model.evaluate(self.lhs).as_signed_long(), ))
         res.append("BUT")
         res.append("target expression: %s with Z3 formula %s" % (rule.target, self.rhs))
         res.append("has counterexample value: %s" % (model.evaluate(self.rhs).as_signed_long(), ))
@@ -74,10 +74,8 @@ class RuleCannotApply(ProofProblem):
 TRUEBV = z3.BitVecVal(1, LONG_BIT)
 FALSEBV = z3.BitVecVal(0, LONG_BIT)
 
-
 def z3_cond(z3expr):
     return z3.If(z3expr, TRUEBV, FALSEBV)
-
 
 def z3_bool_expression(opname, arg0, arg1=None):
     expr = None
@@ -106,6 +104,8 @@ def z3_bool_expression(opname, arg0, arg1=None):
         expr = arg0 != FALSEBV
     elif opname == "int_is_zero":
         expr = arg0 == FALSEBV
+    elif opname == "int_not":
+        expr = arg0 == FALSEBV
     else:
         assert 0
     return expr, valid
@@ -120,12 +120,16 @@ def z3_expression(opname, arg0, arg1=None):
         expr = arg0 - arg1
     elif opname == "int_mul":
         expr = arg0 * arg1
+    elif opname == "int_max":
+        expr = z3.If(arg0 < arg1, arg1, arg0)
+    elif opname == "int_min":
+        expr = z3.If(arg0 < arg1, arg0, arg1)
     elif opname == "int_and":
-        expr = arg0 & arg1
+        expr = z3_cond(z3.And(arg0 != FALSEBV ,arg1 != FALSEBV))
     elif opname == "int_or":
-        expr = arg0 | arg1
+        expr = z3_cond(z3.Or(arg0 != FALSEBV ,arg1 != FALSEBV))
     elif opname == "int_xor":
-        expr = arg0 ^ arg1
+        expr = z3_cond(z3.Xor(arg0 != FALSEBV ,arg1 != FALSEBV))
     elif opname == "int_lshift":
         expr = arg0 << arg1
         valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
@@ -143,6 +147,8 @@ def z3_expression(opname, arg0, arg1=None):
         expr = z3.Extract(LONG_BIT * 2 - 1, LONG_BIT, zarg0 * zarg1)
     elif opname == "int_neg":
         expr = -arg0
+    elif opname == "int_abs":
+        expr = z3.Abs(arg0)
     elif opname == "int_invert":
         expr = ~arg0
     elif opname == "int_force_ge_zero":

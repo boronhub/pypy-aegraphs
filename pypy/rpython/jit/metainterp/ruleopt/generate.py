@@ -3,6 +3,8 @@ from __future__ import print_function
 import sys, os
 from rply.errors import ParsingError, LexingError
 from rpython.jit.metainterp.ruleopt import parse, proof, codegen
+# for debug only
+import traceback
 
 def main(argv):
     here = os.path.dirname(__file__)
@@ -49,5 +51,9 @@ MININT = -sys.maxint - 1
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv))
-    except Exception:
-        import pdb;pdb.xpm()
+    except Exception as e:
+        import pdb
+        print("An error occurred:", e)
+        print(traceback.format_exc())
+
+        #;pdb.xpm()

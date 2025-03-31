@@ -1,0 +1,2 @@
+int_and_int_xor_1_int_xor : int_and(int_xor(b, a), 1) 
+=> int_xor(b, a)
