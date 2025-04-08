@@ -264,7 +264,7 @@ def create_package(basedir, options, _fake=False):
             shutil.copy(str(source), str(archive))
         else:
             open(str(archive), 'wb').close()
-        os.chmod(str(archive), 0755)
+        os.chmod(str(archive), 0o755)
     if not _fake and not ARCH == 'win32':
         # create a link to pypy, python
         old_dir = os.getcwd()

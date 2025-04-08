@@ -14,6 +14,220 @@ from rpython.jit.codewriter.effectinfo import EffectInfo
 from rpython.rlib.rarithmetic import intmask
 from rpython.rlib.debug import debug_print
 from rpython.rlib import objectmodel
+import itertools
+
+import sys
+from rpython.jit.metainterp.history import ConstInt
+from rpython.jit.metainterp.optimizeopt.util import (
+    get_box_replacement)
+from rpython.jit.metainterp.resoperation import rop
+
+from rpython.rlib.rarithmetic import LONG_BIT, r_uint, intmask, ovfcheck, uint_mul_high, highest_bit
+MAXINT = sys.maxint
+MININT = -sys.maxint - 1
+
+
+class EId(int):
+    pass
+
+class ELit(object):
+    def __init__(self, value):
+        self.value = value
+
+    def __eq__(self, other):
+        return isinstance(other, ELit) and self.value == other.value
+
+    def __hash__(self):
+        return hash(self.value)
+
+    def __repr__(self):
+        return "ELit(%r)" % self.value
+
+
+class Enode(object):
+    def __init__(self, name, args):
+        self.name = name
+        self.args = tuple(args)
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, Enode)
+            and self.name == other.name
+            and self.args == other.args
+        )
+
+    def __hash__(self):
+        return hash((self.name, self.args))
+
+    def __repr__(self):
+        return "Enode(%r, %r)" % (self.name, self.args)
+
+
+class AEGraph(object):
+    def __init__(self):
+        self.uf = []
+        self.unodes = []
+        self.enodes = []
+        self.hashcons = {}
+
+    def __repr__(self):
+        return "AEGraph: {{\nuf = {},\nunodes = {},\nenodes = {},\nhashcons = {}\n}}".format(
+            self.uf, self.unodes, self.enodes, self.hashcons
+        )
+
+    def makeset(self):
+        z = len(self.uf)
+        self.uf.append(z)
+        self.unodes.append(None)
+        self.enodes.append(None)
+        return EId(z)
+
+    def find(self, x):
+        while self.uf[x] != x:
+            x = self.uf[x]
+        return x
+
+    def union(self, x, y):
+        assert isinstance(x, int) and isinstance(y, int)
+        x = self.find(x)
+        y = self.find(y)
+        if x != y:
+            z = self.makeset()
+            self.uf[x] = z
+            self.uf[y] = z
+            self.unodes[z] = (x, y)
+            return z
+        else:
+            return x
+
+    def enum(self, x):
+        if self.unodes[x] is None:
+            yield x
+        elif isinstance(self.unodes[x], tuple):
+            l, r = self.unodes[x]
+            for e in self.enum(l):
+                yield e
+            for e in self.enum(r):
+                yield e
+        else:
+            raise ValueError("Invalid value", x)
+
+    def add_enode(self, enode):
+        eid = self.hashcons.get(enode)
+        if eid is not None:
+            return eid
+        eid = self.makeset()
+        self.enodes[eid] = enode
+        self.hashcons[enode] = eid
+        return eid
+
+    def add_term(self, term):
+        if isinstance(term, tuple):
+            if term[0] == "$eid":
+                return term[1]
+            else:
+                name = term[0]
+                args = tuple(self.add_term(arg) for arg in term[1:])
+                return self.add_enode(Enode(name, args))
+        else:
+            return self.add_enode(ELit(term))
+
+    def term_view(self, eid, depth):
+        assert depth >= 0
+        if depth == 0:
+            yield ("$eid", eid)
+        else:
+            for eid1 in self.enum(eid):
+                enode = self.enodes[eid1]
+                if isinstance(enode, ELit):
+                    yield enode.value
+                elif isinstance(enode, Enode):
+                    for args in itertools.product(
+                        *[self.term_view(arg, depth - 1) for arg in enode.args]
+                    ):
+                        yield (enode.name,) + args
+    
+
+    def check(self):
+        for enode, unode in zip(self.enodes, self.unodes):
+            assert (unode is None) != (enode is None)
+        for eid, unode in enumerate(self.unodes):
+            assert unode is None or isinstance(unode, tuple)
+        for eid, enode in enumerate(self.enodes):
+            if enode is not None:
+                assert isinstance(enode, Enode) or isinstance(enode, ELit)
+                assert self.hashcons[enode] == eid
+
+    def const(self, x):
+        eid = self.add_term(("const", x))
+        return eid
+
+    def var(self, name):
+        eid = self.add_term(("var", name))
+        return eid
+
+    def mul(self, x, y):
+        eid = self.add_enode(Enode("mul", (x, y)))
+        for t in self.term_view(eid, 3):
+            if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul" and \
+            isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and \
+            isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const":
+                x_val = t[1][1]
+                y_val = t[2][1]
+                self.union(self.const(x_val * y_val), eid)
+            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "mul":
+                if (isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and t[1][1] == 0):
+                    b = t[2]
+                    print("MUL with 0 fired (left)")
+                    self.union(self.const(0), eid)
+                elif (isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 0):
+                    print("MUL with 0 fired (right)")
+                    b = t[1]
+                    self.union(self.const(0), eid)
+            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "mul":
+                if (isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and t[1][1] == 1):
+                    b = t[2]
+                    self.union(self.add_term(b), eid)
+                elif (isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 1):
+                    b = t[1]
+                    self.union(self.add_term(b), eid)
+            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "mul" and \
+                isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 2:
+                a = t[1]
+                self.union(self.lshift(self.add_term(a), self.const(1)), eid)
+        return self.find(eid)
+
+    def lshift(self, x, y):
+        eid = self.add_enode(Enode("lshift", (x, y)))
+        for t in self.term_view(eid, 3):
+            if isinstance(t, tuple) and len(t) == 3 and t[0] == "lshift" and \
+            isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and t[1][1] == 0:
+                b = t[2]
+                self.union(self.const(0), eid)
+            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "lshift" and \
+                isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 0:
+                a = t[1]
+                self.union(self.add_term(a), eid)
+            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "lshift" and \
+                isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and \
+                isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const":
+                x_val = t[1][1]
+                y_val = t[2][1]
+                self.union(self.const(x_val << y_val), eid)
+        return self.find(eid)
+
+    def div(self, x, y):
+        eid = self.add_enode(Enode("div", (x, y)))
+        for t in self.term_view(eid, 4):
+            if isinstance(t, tuple) and len(t) == 4 and t[0] == "div" and \
+            isinstance(t[1], tuple) and len(t[1]) == 3 and t[1][0] == "mul":
+                a = t[1][1]
+                b = t[1][2]
+                b1 = t[2]
+                if b == b1 and b != 0:
+                    self.union(self.add_term(a), eid)
+        return self.find(eid)
+
 
 def get_integer_min(is_unsigned, byte_size):
     if is_unsigned:
@@ -33,6 +247,9 @@ def get_integer_max(is_unsigned, byte_size):
 class OptIntBounds(Optimization):
     """Keeps track of the bounds placed on integers by guards and remove
        redundant guards"""
+    
+    def __init__(self):
+        self.aegraph = AEGraph()
 
     def propagate_forward(self, op):
         return dispatch_opt(self, op)
@@ -57,90 +274,125 @@ class OptIntBounds(Optimization):
     postprocess_GUARD_FALSE = _postprocess_guard_true_false_value
     postprocess_GUARD_VALUE = _postprocess_guard_true_false_value
 
-    def postprocess_INT_OR(self, op):
-        arg0 = get_box_replacement(op.getarg(0))
-        arg1 = get_box_replacement(op.getarg(1))
-        b0 = self.getintbound(arg0)
-        b1 = self.getintbound(arg1)
-        if b0.and_bound(b1).known_eq_const(0):
-            self.pure_from_args2(rop.INT_ADD,
-                                 arg0, arg1, op)
-            self.pure_from_args2(rop.INT_XOR,
-                                arg0, arg1, op)
-        b = b0.or_bound(b1)
-        self.getintbound(op).intersect(b)
-
-    def postprocess_INT_XOR(self, op):
-        arg0 = get_box_replacement(op.getarg(0))
-        arg1 = get_box_replacement(op.getarg(1))
-        b0 = self.getintbound(arg0)
-        b1 = self.getintbound(arg1)
-        if b0.and_bound(b1).known_eq_const(0):
-            self.pure_from_args2(rop.INT_ADD,
-                                 arg0, arg1, op)
-            self.pure_from_args2(rop.INT_OR,
-                                 arg0, arg1, op)
-        b = b0.xor_bound(b1)
-        self.getintbound(op).intersect(b)
-
-    def postprocess_INT_AND(self, op):
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        b = b1.and_bound(b2)
-        self.getintbound(op).intersect(b)
-
-    def postprocess_INT_SUB(self, op):
-        import sys
-        arg0 = op.getarg(0)
-        arg1 = op.getarg(1)
-        b0 = self.getintbound(arg0)
-        b1 = self.getintbound(arg1)
-        b = b0.sub_bound(b1)
-        self.getintbound(op).intersect(b)
-        self.optimizer.pure_from_args2(rop.INT_ADD, op, arg1, arg0)
-        self.optimizer.pure_from_args2(rop.INT_SUB, arg0, op, arg1)
-        if isinstance(arg1, ConstInt):
-            # invert the constant
-            i1 = arg1.getint()
-            if i1 == -sys.maxint - 1:
-                return
-            inv_arg1 = ConstInt(-i1)
-            self.optimizer.pure_from_args2(rop.INT_ADD, arg0, inv_arg1, op)
-            self.optimizer.pure_from_args2(rop.INT_ADD, inv_arg1, arg0, op)
-            self.optimizer.pure_from_args2(rop.INT_SUB, op, inv_arg1, arg0)
-            self.optimizer.pure_from_args2(rop.INT_SUB, op, arg0, inv_arg1)
-
-
-    def postprocess_INT_ADD(self, op):
-        import sys
-        arg0 = op.getarg(0)
-        arg1 = op.getarg(1)
-        b0 = self.getintbound(arg0)
-        b1 = self.getintbound(arg1)
-        b = b0.add_bound(b1)
-        self.getintbound(op).intersect(b)
-        # Synthesize the reverse op for optimize_default to reuse
-        self.optimizer.pure_from_args2(rop.INT_SUB, op, arg1, arg0)
-        self.optimizer.pure_from_args2(rop.INT_SUB, op, arg0, arg1)
-        if isinstance(arg0, ConstInt):
-            # invert the constant
-            i0 = arg0.getint()
-            if i0 == -sys.maxint - 1:
-                return
-            inv_arg0 = ConstInt(-i0)
-        elif isinstance(arg1, ConstInt):
-            # commutative
-            i0 = arg1.getint()
-            if i0 == -sys.maxint - 1:
-                return
-            inv_arg0 = ConstInt(-i0)
-            arg1 = arg0
-        else:
+    def _eq(self, box1, bound1, box2, bound2):
+        if box1 is box2: return True
+        if bound1.is_constant() and bound2.is_constant() and bound1.lower == bound2.lower: return True
+        return False
+    _all_rules_fired = []
+    _rule_names_int_mul = ['mul_zero', 'mul_one', 'mul_minus_one', 'mul_pow2_const', 'mul_lshift', 'aegraph_mul_const']
+    _rule_fired_int_mul = [0] * 6
+    _all_rules_fired.append(('int_mul', _rule_names_int_mul, _rule_fired_int_mul))
+    
+    def aegraph_optimize_INT_MUL(self, op):
+        arg_0 = get_box_replacement(op.getarg(0))
+        b_arg_0 = self.getintbound(arg_0)
+        arg_1 = get_box_replacement(op.getarg(1))
+        b_arg_1 = self.getintbound(arg_1)
+        
+        if b_arg_0.is_constant() and b_arg_1.is_constant():
+            C_arg_0 = b_arg_0.get_constant_int()
+            C_arg_1 = b_arg_1.get_constant_int()
+            C_arg_0_aegraph = self.aegraph.const(C_arg_0)
+            C_arg_1_aegraph = self.aegraph.const(C_arg_1)
+            const_mul_op = self.aegraph.mul(C_arg_0_aegraph, C_arg_1_aegraph)
+            print("AEGraph after const MUL operation: ", self.aegraph)
+            extracted = list(self.aegraph.term_view(self.aegraph.find(const_mul_op), 5))[0][1]
+            print("final_op rewrite = ", extracted)
+            self.make_constant_int(op, extracted)
+            self._rule_fired_int_mul[5] += 1
             return
-        self.optimizer.pure_from_args2(rop.INT_SUB, arg1, inv_arg0, op)
-        self.optimizer.pure_from_args2(rop.INT_SUB, arg1, op, inv_arg0)
-        self.optimizer.pure_from_args2(rop.INT_ADD, op, inv_arg0, arg1)
-        self.optimizer.pure_from_args2(rop.INT_ADD, inv_arg0, op, arg1)
+
+        """ if b_arg_0.is_constant():
+            C_arg_0 = b_arg_0.get_constant_int()
+            # mul_zero: int_mul(0, x) => 0
+            if C_arg_0 == 0:
+                self.make_constant_int(op, 0)
+                self._rule_fired_int_mul[0] += 1
+                return
+        if b_arg_1.is_constant():
+            C_arg_1 = b_arg_1.get_constant_int()
+            # mul_zero: int_mul(x, 0) => 0
+            if C_arg_1 == 0:
+                self.make_constant_int(op, 0)
+                self._rule_fired_int_mul[0] += 1
+                return
+        if b_arg_0.is_constant():
+            C_arg_0 = b_arg_0.get_constant_int()
+            # mul_one: int_mul(1, x) => x
+            if C_arg_0 == 1:
+                self.make_equal_to(op, arg_1)
+                self._rule_fired_int_mul[1] += 1
+                return
+        if b_arg_1.is_constant():
+            C_arg_1 = b_arg_1.get_constant_int()
+            # mul_one: int_mul(x, 1) => x
+            if C_arg_1 == 1:
+                self.make_equal_to(op, arg_0)
+                self._rule_fired_int_mul[1] += 1
+                return """
+        if b_arg_0.is_constant():
+            C_arg_0 = b_arg_0.get_constant_int()
+            # mul_minus_one: int_mul(-1, x) => int_neg(x)
+            if C_arg_0 == -1:
+                newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_1])
+                self.optimizer.send_extra_operation(newop)
+                self._rule_fired_int_mul[2] += 1
+                return
+            # mul_pow2_const: int_mul(C, x) => int_lshift(x, shift)
+            if C_arg_0 > 0 and C_arg_0 & intmask(r_uint(C_arg_0) - r_uint(1)) == 0:
+                shift = highest_bit(C_arg_0)
+                newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_1, ConstInt(shift)])
+                self.optimizer.send_extra_operation(newop)
+                self._rule_fired_int_mul[3] += 1
+                return
+        else:
+            arg_0_int_lshift = self.optimizer.as_operation(arg_0, rop.INT_LSHIFT)
+            if arg_0_int_lshift is not None:
+                arg_0_0 = get_box_replacement(arg_0_int_lshift.getarg(0))
+                b_arg_0_0 = self.getintbound(arg_0_0)
+                arg_0_1 = get_box_replacement(arg_0_int_lshift.getarg(1))
+                b_arg_0_1 = self.getintbound(arg_0_1)
+                if b_arg_0_0.is_constant():
+                    C_arg_0_0 = b_arg_0_0.get_constant_int()
+                    # mul_lshift: int_mul(int_lshift(1, y), x) => int_lshift(x, y)
+                    if C_arg_0_0 == 1:
+                        if b_arg_0_1.known_ge_const(0) and b_arg_0_1.known_le_const(LONG_BIT):
+                            newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_1, arg_0_1])
+                            self.optimizer.send_extra_operation(newop)
+                            self._rule_fired_int_mul[4] += 1
+                            return
+        if b_arg_1.is_constant():
+            C_arg_1 = b_arg_1.get_constant_int()
+            # mul_minus_one: int_mul(x, -1) => int_neg(x)
+            if C_arg_1 == -1:
+                newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_0])
+                self.optimizer.send_extra_operation(newop)
+                self._rule_fired_int_mul[2] += 1
+                return
+            # mul_pow2_const: int_mul(x, C) => int_lshift(x, shift)
+            if C_arg_1 > 0 and C_arg_1 & intmask(r_uint(C_arg_1) - r_uint(1)) == 0:
+                shift = highest_bit(C_arg_1)
+                newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_0, ConstInt(shift)])
+                self.optimizer.send_extra_operation(newop)
+                self._rule_fired_int_mul[3] += 1
+                return
+        else:
+            arg_1_int_lshift = self.optimizer.as_operation(arg_1, rop.INT_LSHIFT)
+            if arg_1_int_lshift is not None:
+                arg_1_0 = get_box_replacement(arg_1_int_lshift.getarg(0))
+                b_arg_1_0 = self.getintbound(arg_1_0)
+                arg_1_1 = get_box_replacement(arg_1_int_lshift.getarg(1))
+                b_arg_1_1 = self.getintbound(arg_1_1)
+                if b_arg_1_0.is_constant():
+                    C_arg_1_0 = b_arg_1_0.get_constant_int()
+                    # mul_lshift: int_mul(x, int_lshift(1, y)) => int_lshift(x, y)
+                    if C_arg_1_0 == 1:
+                        if b_arg_1_1.known_ge_const(0) and b_arg_1_1.known_le_const(LONG_BIT):
+                            newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_0, arg_1_1])
+                            self.optimizer.send_extra_operation(newop)
+                            self._rule_fired_int_mul[4] += 1
+                            return
+        return self.emit(op)
 
     def postprocess_INT_MUL(self, op):
         b1 = self.getintbound(op.getarg(0))
@@ -148,28 +400,6 @@ class OptIntBounds(Optimization):
         r = self.getintbound(op)
         b = b1.mul_bound(b2)
         r.intersect(b)
-
-    def postprocess_CALL_PURE_I(self, op):
-        # dispatch based on 'oopspecindex' to a method that handles
-        # specifically the given oopspec call.
-        effectinfo = op.getdescr().get_extra_info()
-        oopspecindex = effectinfo.oopspecindex
-        if oopspecindex == EffectInfo.OS_INT_PY_DIV:
-            self.post_call_INT_PY_DIV(op)
-        elif oopspecindex == EffectInfo.OS_INT_PY_MOD:
-            self.post_call_INT_PY_MOD(op)
-
-    def post_call_INT_PY_DIV(self, op):
-        b1 = self.getintbound(op.getarg(1))
-        b2 = self.getintbound(op.getarg(2))
-        r = self.getintbound(op)
-        r.intersect(b1.py_div_bound(b2))
-
-    def post_call_INT_PY_MOD(self, op):
-        b1 = self.getintbound(op.getarg(1))
-        b2 = self.getintbound(op.getarg(2))
-        r = self.getintbound(op)
-        r.intersect(b1.mod_bound(b2))
 
     def postprocess_INT_LSHIFT(self, op):
         arg0 = get_box_replacement(op.getarg(0))
@@ -188,20 +418,6 @@ class OptIntBounds(Optimization):
             #      raise OverflowError("x<<y loosing bits or changing sign")
             self.pure_from_args2(rop.INT_RSHIFT,
                                  op, arg1, arg0)
-
-    def postprocess_INT_RSHIFT(self, op):
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        b = b1.rshift_bound(b2)
-        r = self.getintbound(op)
-        r.intersect(b)
-
-    def postprocess_UINT_RSHIFT(self, op):
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        b = b1.urshift_bound(b2)
-        r = self.getintbound(op)
-        r.intersect(b)
 
     def optimize_GUARD_NO_OVERFLOW(self, op):
         lastop = self.last_emitted_operation
@@ -238,477 +454,6 @@ class OptIntBounds(Optimization):
 
         return self.emit(op)
 
-    def optimize_INT_ADD_OVF(self, op):
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        if b1.add_bound_cannot_overflow(b2):
-            # Transform into INT_ADD.  The following guard will be killed
-            # by optimize_GUARD_NO_OVERFLOW; if we see instead an
-            # optimize_GUARD_OVERFLOW, then InvalidLoop.
-
-            # NB: this case also takes care of int_add_ovf with 0 as one of the
-            # arguments
-            op = self.replace_op_with(op, rop.INT_ADD)
-            return self.optimizer.send_extra_operation(op)
-        return self.emit(op)
-
-    def postprocess_INT_ADD_OVF(self, op):
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        # we can always give the result a bound. if the int_add_ovf is followed
-        # by a guard_no_overflow, then we know no overflow occurred, and the
-        # bound is correct. Otherwise, it must be followed by a guard_overflow
-        # and it is also fine to give the result a bound, because the result
-        # box must never be used in the rest of the trace
-        resbound = b1.add_bound_no_overflow(b2)
-        r = self.getintbound(op)
-        r.intersect(resbound)
-
-    def optimize_INT_SUB_OVF(self, op):
-        arg0 = get_box_replacement(op.getarg(0))
-        arg1 = get_box_replacement(op.getarg(1))
-        b0 = self.getintbound(arg0)
-        b1 = self.getintbound(arg1)
-        if arg0.same_box(arg1):
-            self.make_constant_int(op, 0)
-            return None
-        if b0.sub_bound_cannot_overflow(b1):
-            # this case takes care of int_sub_ovf(x, 0) as well
-            op = self.replace_op_with(op, rop.INT_SUB)
-            return self.optimizer.send_extra_operation(op)
-        return self.emit(op)
-
-    def postprocess_INT_SUB_OVF(self, op):
-        arg0 = get_box_replacement(op.getarg(0))
-        arg1 = get_box_replacement(op.getarg(1))
-        b0 = self.getintbound(arg0)
-        b1 = self.getintbound(arg1)
-        resbound = b0.sub_bound_no_overflow(b1)
-        r = self.getintbound(op)
-        r.intersect(resbound)
-
-    def optimize_INT_MUL_OVF(self, op):
-        b0 = self.getintbound(op.getarg(0))
-        b1 = self.getintbound(op.getarg(1))
-        if b0.mul_bound_cannot_overflow(b1):
-            # this case also takes care of multiplication with 0 and 1
-            op = self.replace_op_with(op, rop.INT_MUL)
-            return self.optimizer.send_extra_operation(op)
-        return self.emit(op)
-
-    def postprocess_INT_MUL_OVF(self, op):
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        resbound = b1.mul_bound_no_overflow(b2)
-        r = self.getintbound(op)
-        r.intersect(resbound)
-
-    def optimize_INT_LT(self, op):
-        arg1 = get_box_replacement(op.getarg(0))
-        arg2 = get_box_replacement(op.getarg(1))
-        b1 = self.getintbound(arg1)
-        b2 = self.getintbound(arg2)
-        if b1.known_lt(b2):
-            self.make_constant_int(op, 1)
-        elif b1.known_ge(b2) or arg1 is arg2:
-            self.make_constant_int(op, 0)
-        else:
-            return self.emit(op)
-
-    def optimize_INT_GT(self, op):
-        arg1 = get_box_replacement(op.getarg(0))
-        arg2 = get_box_replacement(op.getarg(1))
-        b1 = self.getintbound(arg1)
-        b2 = self.getintbound(arg2)
-        if b1.known_gt(b2):
-            self.make_constant_int(op, 1)
-        elif b1.known_le(b2) or arg1 is arg2:
-            self.make_constant_int(op, 0)
-        else:
-            return self.emit(op)
-
-    def optimize_INT_LE(self, op):
-        arg1 = get_box_replacement(op.getarg(0))
-        arg2 = get_box_replacement(op.getarg(1))
-        b1 = self.getintbound(arg1)
-        b2 = self.getintbound(arg2)
-        if b1.known_le(b2) or arg1 is arg2:
-            self.make_constant_int(op, 1)
-        elif b1.known_gt(b2):
-            self.make_constant_int(op, 0)
-        else:
-            return self.emit(op)
-
-    def optimize_INT_GE(self, op):
-        arg1 = get_box_replacement(op.getarg(0))
-        arg2 = get_box_replacement(op.getarg(1))
-        b1 = self.getintbound(arg1)
-        b2 = self.getintbound(arg2)
-        if b1.known_ge(b2) or arg1 is arg2:
-            self.make_constant_int(op, 1)
-        elif b1.known_lt(b2):
-            self.make_constant_int(op, 0)
-        else:
-            return self.emit(op)
-
-    def optimize_UINT_LT(self, op):
-        arg1 = get_box_replacement(op.getarg(0))
-        arg2 = get_box_replacement(op.getarg(1))
-        b1 = self.getintbound(arg1)
-        b2 = self.getintbound(arg2)
-        if b1.known_unsigned_lt(b2):
-            self.make_constant_int(op, 1)
-        elif b1.known_unsigned_ge(b2) or arg1 is arg2:
-            self.make_constant_int(op, 0)
-        else:
-            return self.emit(op)
-
-    def propagate_bounds_UINT_LT(self, op):
-        r = self.getintbound(op)
-        if r.is_constant():
-            if r.get_constant_int() == 1:
-                self.make_unsigned_lt(op.getarg(0), op.getarg(1))
-            else:
-                assert r.get_constant_int() == 0
-                self.make_unsigned_ge(op.getarg(0), op.getarg(1))
-
-    def optimize_UINT_GT(self, op):
-        arg1 = get_box_replacement(op.getarg(0))
-        arg2 = get_box_replacement(op.getarg(1))
-        b1 = self.getintbound(arg1)
-        b2 = self.getintbound(arg2)
-        if b1.known_unsigned_gt(b2):
-            self.make_constant_int(op, 1)
-        elif b1.known_unsigned_le(b2) or arg1 is arg2:
-            self.make_constant_int(op, 0)
-        else:
-            return self.emit(op)
-
-    def propagate_bounds_UINT_GT(self, op):
-        r = self.getintbound(op)
-        if r.is_constant():
-            if r.get_constant_int() == 1:
-                self.make_unsigned_gt(op.getarg(0), op.getarg(1))
-            else:
-                assert r.get_constant_int() == 0
-                self.make_unsigned_le(op.getarg(0), op.getarg(1))
-
-    def optimize_UINT_LE(self, op):
-        arg1 = get_box_replacement(op.getarg(0))
-        arg2 = get_box_replacement(op.getarg(1))
-        b1 = self.getintbound(arg1)
-        b2 = self.getintbound(arg2)
-        if b1.known_unsigned_le(b2) or arg1 is arg2:
-            self.make_constant_int(op, 1)
-        elif b1.known_unsigned_gt(b2):
-            self.make_constant_int(op, 0)
-        else:
-            return self.emit(op)
-
-    def propagate_bounds_UINT_LE(self, op):
-        r = self.getintbound(op)
-        if r.is_constant():
-            if r.get_constant_int() == 1:
-                self.make_unsigned_le(op.getarg(0), op.getarg(1))
-            else:
-                assert r.get_constant_int() == 0
-                self.make_unsigned_gt(op.getarg(0), op.getarg(1))
-
-    def optimize_UINT_GE(self, op):
-        arg1 = get_box_replacement(op.getarg(0))
-        arg2 = get_box_replacement(op.getarg(1))
-        b1 = self.getintbound(arg1)
-        b2 = self.getintbound(arg2)
-        if b1.known_unsigned_ge(b2) or arg1 is arg2:
-            self.make_constant_int(op, 1)
-        elif b1.known_unsigned_lt(b2):
-            self.make_constant_int(op, 0)
-        else:
-            return self.emit(op)
-
-    def propagate_bounds_UINT_GE(self, op):
-        r = self.getintbound(op)
-        if r.is_constant():
-            if r.get_constant_int() == 1:
-                self.make_unsigned_ge(op.getarg(0), op.getarg(1))
-            else:
-                assert r.get_constant_int() == 0
-                self.make_unsigned_lt(op.getarg(0), op.getarg(1))
-
-    def optimize_INT_SIGNEXT(self, op):
-        b = self.getintbound(op.getarg(0))
-        numbits = op.getarg(1).getint() * 8
-        start = -(1 << (numbits - 1))
-        stop = 1 << (numbits - 1)
-        if b.is_within_range(start, stop - 1):
-            self.make_equal_to(op, op.getarg(0))
-        else:
-            return self.emit(op)
-
-    def postprocess_INT_SIGNEXT(self, op):
-        numbits = op.getarg(1).getint() * 8
-        start = -(1 << (numbits - 1))
-        stop = 1 << (numbits - 1)
-        bres = self.getintbound(op)
-        bres.intersect_const(start, stop - 1)
-
-    def postprocess_INT_FORCE_GE_ZERO(self, op):
-        b = self.getintbound(op)
-        b.make_ge_const(0)
-        b1 = self.getintbound(op.getarg(0))
-        if b1.upper >= 0:
-            b.make_le(b1)
-
-    def postprocess_INT_INVERT(self, op):
-        b = self.getintbound(op.getarg(0))
-        bounds = b.invert_bound()
-        bres = self.getintbound(op)
-        bres.intersect(bounds)
-
-    def propagate_bounds_INT_INVERT(self, op):
-        arg0 = get_box_replacement(op.getarg(0))
-        b = self.getintbound(arg0)
-        bres = self.getintbound(op)
-        bounds = bres.invert_bound()
-        if b.intersect(bounds):
-            self.propagate_bounds_backward(arg0)
-
-    def propagate_bounds_INT_NEG(self, op):
-        arg0 = get_box_replacement(op.getarg(0))
-        b = self.getintbound(arg0)
-        bres = self.getintbound(op)
-        bounds = bres.neg_bound()
-        if b.intersect(bounds):
-            self.propagate_bounds_backward(arg0)
-
-    def postprocess_INT_NEG(self, op):
-        b = self.getintbound(op.getarg(0))
-        bounds = b.neg_bound()
-        bres = self.getintbound(op)
-        bres.intersect(bounds)
-
-    def postprocess_ARRAYLEN_GC(self, op):
-        array = self.ensure_ptr_info_arg0(op)
-        self.optimizer.setintbound(op, array.getlenbound(None))
-
-    def postprocess_STRLEN(self, op):
-        self.make_nonnull_str(op.getarg(0), vstring.mode_string)
-        array = getptrinfo(op.getarg(0))
-        self.optimizer.setintbound(op, array.getlenbound(vstring.mode_string))
-
-    def postprocess_UNICODELEN(self, op):
-        self.make_nonnull_str(op.getarg(0), vstring.mode_unicode)
-        array = getptrinfo(op.getarg(0))
-        self.optimizer.setintbound(op, array.getlenbound(vstring.mode_unicode))
-
-    def postprocess_STRGETITEM(self, op):
-        v1 = self.getintbound(op)
-        v2 = getptrinfo(op.getarg(0))
-        intbound = self.getintbound(op.getarg(1))
-        if v2 is not None:
-            lenbound = v2.getlenbound(vstring.mode_string)
-            if lenbound is not None:
-                lenbound.make_gt_const(intbound.lower)
-        v1.intersect_const(0, 255)
-
-    def postprocess_GETFIELD_RAW_I(self, op):
-        descr = op.getdescr()
-        if descr.is_integer_bounded():
-            b1 = self.getintbound(op)
-            b1.intersect_const(descr.get_integer_min(), descr.get_integer_max())
-
-    postprocess_GETFIELD_RAW_F = postprocess_GETFIELD_RAW_I
-    postprocess_GETFIELD_RAW_R = postprocess_GETFIELD_RAW_I
-    postprocess_GETFIELD_GC_I = postprocess_GETFIELD_RAW_I
-    postprocess_GETFIELD_GC_R = postprocess_GETFIELD_RAW_I
-    postprocess_GETFIELD_GC_F = postprocess_GETFIELD_RAW_I
-
-    postprocess_GETINTERIORFIELD_GC_I = postprocess_GETFIELD_RAW_I
-    postprocess_GETINTERIORFIELD_GC_R = postprocess_GETFIELD_RAW_I
-    postprocess_GETINTERIORFIELD_GC_F = postprocess_GETFIELD_RAW_I
-
-    def postprocess_GETARRAYITEM_RAW_I(self, op):
-        descr = op.getdescr()
-        if descr and descr.is_item_integer_bounded():
-            intbound = self.getintbound(op)
-            intbound.intersect_const(descr.get_item_integer_min(), descr.get_item_integer_max())
-
-    postprocess_GETARRAYITEM_RAW_F = postprocess_GETARRAYITEM_RAW_I
-    postprocess_GETARRAYITEM_GC_I = postprocess_GETARRAYITEM_RAW_I
-    postprocess_GETARRAYITEM_GC_F = postprocess_GETARRAYITEM_RAW_I
-    postprocess_GETARRAYITEM_GC_R = postprocess_GETARRAYITEM_RAW_I
-
-    def postprocess_UNICODEGETITEM(self, op):
-        b1 = self.getintbound(op)
-        b1.make_ge_const(0)
-        v2 = getptrinfo(op.getarg(0))
-        intbound = self.getintbound(op.getarg(1))
-        if v2 is not None:
-            lenbound = v2.getlenbound(vstring.mode_unicode)
-            if lenbound is not None:
-                lenbound.make_gt_const(intbound.lower)
-
-    def make_int_lt(self, box1, box2):
-        b1 = self.getintbound(box1)
-        b2 = self.getintbound(box2)
-        if b1.make_lt(b2):
-            self.propagate_bounds_backward(box1)
-        if b2.make_gt(b1):
-            self.propagate_bounds_backward(box2)
-
-    def make_int_le(self, box1, box2):
-        b1 = self.getintbound(box1)
-        b2 = self.getintbound(box2)
-        if b1.make_le(b2):
-            self.propagate_bounds_backward(box1)
-        if b2.make_ge(b1):
-            self.propagate_bounds_backward(box2)
-
-    def make_int_gt(self, box1, box2):
-        self.make_int_lt(box2, box1)
-
-    def make_int_ge(self, box1, box2):
-        self.make_int_le(box2, box1)
-
-    def make_unsigned_lt(self, box1, box2):
-        b1 = self.getintbound(box1)
-        b2 = self.getintbound(box2)
-        if b1.make_unsigned_lt(b2):
-            self.propagate_bounds_backward(box1)
-        if b2.make_unsigned_gt(b1):
-            self.propagate_bounds_backward(box2)
-
-    def make_unsigned_le(self, box1, box2):
-        b1 = self.getintbound(box1)
-        b2 = self.getintbound(box2)
-        if b1.make_unsigned_le(b2):
-            self.propagate_bounds_backward(box1)
-        if b2.make_unsigned_ge(b1):
-            self.propagate_bounds_backward(box2)
-
-    def make_unsigned_gt(self, box1, box2):
-        self.make_unsigned_lt(box2, box1)
-
-    def make_unsigned_ge(self, box1, box2):
-        self.make_unsigned_le(box2, box1)
-
-    def propagate_bounds_INT_LT(self, op):
-        r = self.getintbound(op)
-        if r.is_constant():
-            if r.get_constant_int() == 1:
-                self.make_int_lt(op.getarg(0), op.getarg(1))
-            else:
-                assert r.get_constant_int() == 0
-                self.make_int_ge(op.getarg(0), op.getarg(1))
-
-    def propagate_bounds_INT_GT(self, op):
-        r = self.getintbound(op)
-        if r.is_constant():
-            if r.get_constant_int() == 1:
-                self.make_int_gt(op.getarg(0), op.getarg(1))
-            else:
-                assert r.get_constant_int() == 0
-                self.make_int_le(op.getarg(0), op.getarg(1))
-
-    def propagate_bounds_INT_LE(self, op):
-        r = self.getintbound(op)
-        if r.is_constant():
-            if r.get_constant_int() == 1:
-                self.make_int_le(op.getarg(0), op.getarg(1))
-            else:
-                assert r.get_constant_int() == 0
-                self.make_int_gt(op.getarg(0), op.getarg(1))
-
-    def propagate_bounds_INT_GE(self, op):
-        r = self.getintbound(op)
-        if r.is_constant():
-            if r.get_constant_int() == 1:
-                self.make_int_ge(op.getarg(0), op.getarg(1))
-            else:
-                assert r.get_constant_int() == 0
-                self.make_int_lt(op.getarg(0), op.getarg(1))
-
-    def propagate_bounds_INT_EQ(self, op):
-        r = self.getintbound(op)
-        if r.known_eq_const(1):
-            self.make_eq(op.getarg(0), op.getarg(1))
-        elif r.known_eq_const(0):
-            self.make_ne(op.getarg(0), op.getarg(1))
-
-    def propagate_bounds_INT_NE(self, op):
-        r = self.getintbound(op)
-        if r.known_eq_const(0):
-            self.make_eq(op.getarg(0), op.getarg(1))
-        elif r.known_eq_const(1):
-            self.make_ne(op.getarg(0), op.getarg(1))
-
-    def make_eq(self, arg0, arg1):
-        b0 = self.getintbound(arg0)
-        b1 = self.getintbound(arg1)
-        if b0.intersect(b1):
-            self.propagate_bounds_backward(arg0)
-        if b1.intersect(b0):
-            self.propagate_bounds_backward(arg1)
-
-    def make_ne(self, arg0, arg1):
-        b0 = self.getintbound(arg0)
-        b1 = self.getintbound(arg1)
-        if b1.is_constant():
-            v1 = b1.get_constant_int()
-            if b0.make_ne_const(v1):
-                self.propagate_bounds_backward(arg0)
-        elif b0.is_constant():
-            v0 = b0.get_constant_int()
-            if b1.make_ne_const(v0):
-                self.propagate_bounds_backward(arg1)
-
-    def _propagate_int_is_true_or_zero(self, op, valnonzero, valzero):
-        if self.is_raw_ptr(op.getarg(0)):
-            return
-        r = self.getintbound(op)
-        if r.is_constant():
-            if r.get_constant_int() == valnonzero:
-                b1 = self.getintbound(op.getarg(0))
-                if b1.known_nonnegative():
-                    b1.make_gt_const(0)
-                    self.propagate_bounds_backward(op.getarg(0))
-                elif b1.known_le_const(0):
-                    b1.make_lt_const(0)
-                    self.propagate_bounds_backward(op.getarg(0))
-            elif r.get_constant_int() == valzero:
-                self.make_constant_int(op.getarg(0), 0)
-                self.propagate_bounds_backward(op.getarg(0))
-
-    def propagate_bounds_INT_IS_TRUE(self, op):
-        self._propagate_int_is_true_or_zero(op, 1, 0)
-
-    def propagate_bounds_INT_IS_ZERO(self, op):
-        self._propagate_int_is_true_or_zero(op, 0, 1)
-
-    def propagate_bounds_INT_ADD(self, op):
-        if self.is_raw_ptr(op.getarg(0)) or self.is_raw_ptr(op.getarg(1)):
-            return
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        r = self.getintbound(op)
-        b = r.sub_bound(b2)
-        if b1.intersect(b):
-            self.propagate_bounds_backward(op.getarg(0))
-        b = r.sub_bound(b1)
-        if b2.intersect(b):
-            self.propagate_bounds_backward(op.getarg(1))
-
-    def propagate_bounds_INT_SUB(self, op):
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        r = self.getintbound(op)
-        b = r.add_bound(b2)
-        if b1.intersect(b):
-            self.propagate_bounds_backward(op.getarg(0))
-        b = r.sub_bound(b1).neg_bound()
-        if b2.intersect(b):
-            self.propagate_bounds_backward(op.getarg(1))
-
     def propagate_bounds_INT_MUL(self, op):
         b1 = self.getintbound(op.getarg(0))
         b2 = self.getintbound(op.getarg(1))
@@ -733,66 +478,11 @@ class OptIntBounds(Optimization):
         if b1.intersect(b):
             self.propagate_bounds_backward(op.getarg(0))
 
-    def propagate_bounds_UINT_RSHIFT(self, op):
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        if not b2.is_constant():
-            return
-        r = self.getintbound(op)
-        b = r.urshift_bound_backwards(b2)
-        if b1.intersect(b):
-            self.propagate_bounds_backward(op.getarg(0))
+    #objectmodel.import_from_mixin(autogenintrules.OptIntAutoGenerated)
 
-    def propagate_bounds_INT_RSHIFT(self, op):
-        b1 = self.getintbound(op.getarg(0))
-        b2 = self.getintbound(op.getarg(1))
-        if not b2.is_constant():
-            return
-        r = self.getintbound(op)
-        b = r.rshift_bound_backwards(b2)
-        if b1.intersect(b):
-            self.propagate_bounds_backward(op.getarg(0))
+#dispatch_opt = make_dispatcher_method(OptIntBounds, 'optimize_', default=OptIntBounds.emit)
 
-    propagate_bounds_INT_ADD_OVF = propagate_bounds_INT_ADD
-    propagate_bounds_INT_SUB_OVF = propagate_bounds_INT_SUB
-    propagate_bounds_INT_MUL_OVF = propagate_bounds_INT_MUL
-
-    def propagate_bounds_INT_AND(self, op):
-        r = self.getintbound(op)
-        b0 = self.getintbound(op.getarg(0))
-        b1 = self.getintbound(op.getarg(1))
-        b = b0.and_bound_backwards(r)
-        if b1.intersect(b):
-            self.propagate_bounds_backward(op.getarg(1))
-        b = b1.and_bound_backwards(r)
-        if b0.intersect(b):
-            self.propagate_bounds_backward(op.getarg(0))
-
-    def propagate_bounds_INT_OR(self, op):
-        r = self.getintbound(op)
-        b0 = self.getintbound(op.getarg(0))
-        b1 = self.getintbound(op.getarg(1))
-        b = b0.or_bound_backwards(r)
-        if b1.intersect(b):
-            self.propagate_bounds_backward(op.getarg(1))
-        b = b1.or_bound_backwards(r)
-        if b0.intersect(b):
-            self.propagate_bounds_backward(op.getarg(0))
-
-    def propagate_bounds_INT_XOR(self, op):
-        r = self.getintbound(op)
-        b0 = self.getintbound(op.getarg(0))
-        b1 = self.getintbound(op.getarg(1))
-        b = b0.xor_bound(r) # xor is its own inverse
-        if b1.intersect(b):
-            self.propagate_bounds_backward(op.getarg(1))
-        b = b1.xor_bound(r)
-        if b0.intersect(b):
-            self.propagate_bounds_backward(op.getarg(0))
-
-    objectmodel.import_from_mixin(autogenintrules.OptIntAutoGenerated)
-
-dispatch_opt = make_dispatcher_method(OptIntBounds, 'optimize_',
+dispatch_opt = make_dispatcher_method(OptIntBounds, 'aegraph_optimize_',
                                       default=OptIntBounds.emit)
 dispatch_bounds_ops = make_dispatcher_method(OptIntBounds, 'propagate_bounds_')
 OptIntBounds.propagate_postprocess = make_dispatcher_method(OptIntBounds, 'postprocess_')

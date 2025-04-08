@@ -73,3 +73,7 @@ Use simplified ae-graphs to infer (offline) and apply (online) rewrite rules for
 - e-graphhs in JIT: https://bernsteinbear.com/blog/whats-in-an-egraph/
 
 - using aegraphs/modified-egraphs both both complex, offline rule inference and online equality-saturation based rewriting with phase ordering
+
+
+https://github.com/philzook58/eggmt/blob/main/eggmt/aegraph.py
+revise aegraphs: https://github.com/bytecodealliance/wasmtime/pull/4909/files
