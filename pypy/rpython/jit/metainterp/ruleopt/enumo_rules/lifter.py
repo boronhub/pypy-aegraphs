@@ -48,10 +48,6 @@ def lift_rule(s_expression: str) -> str:
     return rule
 
 
-""" s_expression = "(int_sub 1 (int_or ?b ?a)) <=> (int_not (int_or ?b ?a))"
-result = lift_rule(s_expression)
-print(result)
- """
 try:
     with open("gen_pypy_int_rules_a5.rules", "r") as source_file, open(
         "real.rules", "w"

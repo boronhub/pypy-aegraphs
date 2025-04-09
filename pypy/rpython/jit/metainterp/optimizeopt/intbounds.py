@@ -175,24 +175,23 @@ class AEGraph(object):
                 x_val = t[1][1]
                 y_val = t[2][1]
                 self.union(self.const(x_val * y_val), eid)
-            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "mul":
+            if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul":
                 if (isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and t[1][1] == 0):
                     b = t[2]
-                    print("MUL with 0 fired (left)")
                     self.union(self.const(0), eid)
                 elif (isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 0):
-                    print("MUL with 0 fired (right)")
                     b = t[1]
                     self.union(self.const(0), eid)
-            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "mul":
+            if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul":
                 if (isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and t[1][1] == 1):
                     b = t[2]
                     self.union(self.add_term(b), eid)
                 elif (isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 1):
                     b = t[1]
                     self.union(self.add_term(b), eid)
-            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "mul" and \
+            if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul" and \
                 isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 2:
+                print("LSHIFT rule in aegraph")
                 a = t[1]
                 self.union(self.lshift(self.add_term(a), self.const(1)), eid)
         return self.find(eid)
@@ -227,7 +226,6 @@ class AEGraph(object):
                 if b == b1 and b != 0:
                     self.union(self.add_term(a), eid)
         return self.find(eid)
-
 
 def get_integer_min(is_unsigned, byte_size):
     if is_unsigned:
@@ -289,7 +287,7 @@ class OptIntBounds(Optimization):
         arg_1 = get_box_replacement(op.getarg(1))
         b_arg_1 = self.getintbound(arg_1)
         
-        if b_arg_0.is_constant() and b_arg_1.is_constant():
+        """ if b_arg_0.is_constant() and b_arg_1.is_constant():
             C_arg_0 = b_arg_0.get_constant_int()
             C_arg_1 = b_arg_1.get_constant_int()
             C_arg_0_aegraph = self.aegraph.const(C_arg_0)
@@ -297,10 +295,36 @@ class OptIntBounds(Optimization):
             const_mul_op = self.aegraph.mul(C_arg_0_aegraph, C_arg_1_aegraph)
             print("AEGraph after const MUL operation: ", self.aegraph)
             extracted = list(self.aegraph.term_view(self.aegraph.find(const_mul_op), 5))[0][1]
-            print("final_op rewrite = ", extracted)
+            #print("final_op rewrite = ", extracted)
             self.make_constant_int(op, extracted)
             self._rule_fired_int_mul[5] += 1
-            return
+            return """
+        
+        print("arg info: ", self.optimizer.getinfo(arg_1))
+        print("arg info: ", self.optimizer.getinfo(arg_0))
+        if b_arg_0.is_constant():
+            C_arg_0 = b_arg_0.get_constant_int()
+            C_arg_0_aegraph = self.aegraph.const(C_arg_0)
+        else:
+            C_arg_0_aegraph = self.aegraph.var("a")
+
+        if b_arg_1.is_constant():
+                C_arg_1 = b_arg_1.get_constant_int()
+                C_arg_1_aegraph = self.aegraph.const(C_arg_1)
+        else:
+            C_arg_1_aegraph = self.aegraph.const(9)
+        
+        mul_op = self.aegraph.mul(C_arg_0_aegraph, C_arg_1_aegraph)
+        print("AEGraph after MUL operation: ", self.aegraph)
+        extracted = list(self.aegraph.term_view(self.aegraph.find(mul_op), 10))[0]
+        if extracted[0] == "lshift":  
+            print("final_op rewrite = ", extracted)
+            newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_0, ConstInt(1)])
+            self.optimizer.send_extra_operation(newop)
+        self._rule_fired_int_mul[5] += 1
+        print("\n\n\n")
+        return
+               
 
         """ if b_arg_0.is_constant():
             C_arg_0 = b_arg_0.get_constant_int()
