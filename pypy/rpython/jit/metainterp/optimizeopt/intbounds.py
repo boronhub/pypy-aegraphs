@@ -190,10 +190,15 @@ class AEGraph(object):
                     b = t[1]
                     self.union(self.add_term(b), eid)
             if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul" and \
-                isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 2:
+                isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and (t[2][1] & intmask(r_uint(t[2][1]) - r_uint(1)) == 0) :
                 print("LSHIFT rule in aegraph")
                 a = t[1]
-                self.union(self.lshift(self.add_term(a), self.const(1)), eid)
+                self.union(self.lshift(self.add_term(a), self.const(highest_bit(t[2][1]))), eid)
+            if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul" and \
+                isinstance(t[2], tuple) and len(t[2]) == 2 and t[1][0] == "const" and (t[1][1] & intmask(r_uint(t[1][1]) - r_uint(1)) == 0) :
+                print("LSHIFT rule right in aegraph")
+                a = t[2]
+                self.union(self.lshift(self.add_term(a), self.const(highest_bit(t[1][1]))), eid) 
         return self.find(eid)
 
     def lshift(self, x, y):
@@ -214,6 +219,15 @@ class AEGraph(object):
                 y_val = t[2][1]
                 self.union(self.const(x_val << y_val), eid)
         return self.find(eid)
+    
+    def neg(self, x):
+        eid = self.add_enode(Enode("neg", x))
+        if isinstance(t, tuple) and len(t) == 2 and t[0] == "neg" and \
+                isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const":
+                x_val = t[1][1]
+                self.union(self.const(-x_val), eid)
+        return eid
+        
 
     def div(self, x, y):
         eid = self.add_enode(Enode("div", (x, y)))
@@ -280,6 +294,7 @@ class OptIntBounds(Optimization):
     _rule_names_int_mul = ['mul_zero', 'mul_one', 'mul_minus_one', 'mul_pow2_const', 'mul_lshift', 'aegraph_mul_const']
     _rule_fired_int_mul = [0] * 6
     _all_rules_fired.append(('int_mul', _rule_names_int_mul, _rule_fired_int_mul))
+    var_counter = 0
     
     def aegraph_optimize_INT_MUL(self, op):
         arg_0 = get_box_replacement(op.getarg(0))
@@ -287,137 +302,42 @@ class OptIntBounds(Optimization):
         arg_1 = get_box_replacement(op.getarg(1))
         b_arg_1 = self.getintbound(arg_1)
         
-        """ if b_arg_0.is_constant() and b_arg_1.is_constant():
-            C_arg_0 = b_arg_0.get_constant_int()
-            C_arg_1 = b_arg_1.get_constant_int()
-            C_arg_0_aegraph = self.aegraph.const(C_arg_0)
-            C_arg_1_aegraph = self.aegraph.const(C_arg_1)
-            const_mul_op = self.aegraph.mul(C_arg_0_aegraph, C_arg_1_aegraph)
-            print("AEGraph after const MUL operation: ", self.aegraph)
-            extracted = list(self.aegraph.term_view(self.aegraph.find(const_mul_op), 5))[0][1]
-            #print("final_op rewrite = ", extracted)
-            self.make_constant_int(op, extracted)
-            self._rule_fired_int_mul[5] += 1
-            return """
-        
-        print("arg info: ", self.optimizer.getinfo(arg_1))
-        print("arg info: ", self.optimizer.getinfo(arg_0))
         if b_arg_0.is_constant():
             C_arg_0 = b_arg_0.get_constant_int()
             C_arg_0_aegraph = self.aegraph.const(C_arg_0)
         else:
-            C_arg_0_aegraph = self.aegraph.var("a")
+            C_arg_0_aegraph = self.aegraph.var("var_{0}".format(self.var_counter))
+            self.var_counter += 1
 
         if b_arg_1.is_constant():
                 C_arg_1 = b_arg_1.get_constant_int()
                 C_arg_1_aegraph = self.aegraph.const(C_arg_1)
         else:
-            C_arg_1_aegraph = self.aegraph.const(9)
+            C_arg_1_aegraph = self.aegraph.var("var_{0}".format(self.var_counter))
+            self.var_counter += 1
         
         mul_op = self.aegraph.mul(C_arg_0_aegraph, C_arg_1_aegraph)
         print("AEGraph after MUL operation: ", self.aegraph)
         extracted = list(self.aegraph.term_view(self.aegraph.find(mul_op), 10))[0]
         if extracted[0] == "lshift":  
-            print("final_op rewrite = ", extracted)
-            newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_0, ConstInt(1)])
+            print("LSHIFT RULE RR")
+            if b_arg_0.is_constant():
+                newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_1, ConstInt(extracted[2][1])])
+            elif b_arg_1.is_constant():
+                newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_0, ConstInt(extracted[2][1])])
             self.optimizer.send_extra_operation(newop)
+            return
+        if extracted[0] == "const":
+            const_val = list(self.aegraph.term_view(self.aegraph.find(mul_op), 10))[0][1]
+            self.make_constant_int(op, const_val)
+            print("aeval to constant")
+            return
+
         self._rule_fired_int_mul[5] += 1
+        print("final_op rewrite = ", extracted)
         print("\n\n\n")
-        return
-               
-
-        """ if b_arg_0.is_constant():
-            C_arg_0 = b_arg_0.get_constant_int()
-            # mul_zero: int_mul(0, x) => 0
-            if C_arg_0 == 0:
-                self.make_constant_int(op, 0)
-                self._rule_fired_int_mul[0] += 1
-                return
-        if b_arg_1.is_constant():
-            C_arg_1 = b_arg_1.get_constant_int()
-            # mul_zero: int_mul(x, 0) => 0
-            if C_arg_1 == 0:
-                self.make_constant_int(op, 0)
-                self._rule_fired_int_mul[0] += 1
-                return
-        if b_arg_0.is_constant():
-            C_arg_0 = b_arg_0.get_constant_int()
-            # mul_one: int_mul(1, x) => x
-            if C_arg_0 == 1:
-                self.make_equal_to(op, arg_1)
-                self._rule_fired_int_mul[1] += 1
-                return
-        if b_arg_1.is_constant():
-            C_arg_1 = b_arg_1.get_constant_int()
-            # mul_one: int_mul(x, 1) => x
-            if C_arg_1 == 1:
-                self.make_equal_to(op, arg_0)
-                self._rule_fired_int_mul[1] += 1
-                return """
-        if b_arg_0.is_constant():
-            C_arg_0 = b_arg_0.get_constant_int()
-            # mul_minus_one: int_mul(-1, x) => int_neg(x)
-            if C_arg_0 == -1:
-                newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_1])
-                self.optimizer.send_extra_operation(newop)
-                self._rule_fired_int_mul[2] += 1
-                return
-            # mul_pow2_const: int_mul(C, x) => int_lshift(x, shift)
-            if C_arg_0 > 0 and C_arg_0 & intmask(r_uint(C_arg_0) - r_uint(1)) == 0:
-                shift = highest_bit(C_arg_0)
-                newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_1, ConstInt(shift)])
-                self.optimizer.send_extra_operation(newop)
-                self._rule_fired_int_mul[3] += 1
-                return
-        else:
-            arg_0_int_lshift = self.optimizer.as_operation(arg_0, rop.INT_LSHIFT)
-            if arg_0_int_lshift is not None:
-                arg_0_0 = get_box_replacement(arg_0_int_lshift.getarg(0))
-                b_arg_0_0 = self.getintbound(arg_0_0)
-                arg_0_1 = get_box_replacement(arg_0_int_lshift.getarg(1))
-                b_arg_0_1 = self.getintbound(arg_0_1)
-                if b_arg_0_0.is_constant():
-                    C_arg_0_0 = b_arg_0_0.get_constant_int()
-                    # mul_lshift: int_mul(int_lshift(1, y), x) => int_lshift(x, y)
-                    if C_arg_0_0 == 1:
-                        if b_arg_0_1.known_ge_const(0) and b_arg_0_1.known_le_const(LONG_BIT):
-                            newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_1, arg_0_1])
-                            self.optimizer.send_extra_operation(newop)
-                            self._rule_fired_int_mul[4] += 1
-                            return
-        if b_arg_1.is_constant():
-            C_arg_1 = b_arg_1.get_constant_int()
-            # mul_minus_one: int_mul(x, -1) => int_neg(x)
-            if C_arg_1 == -1:
-                newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_0])
-                self.optimizer.send_extra_operation(newop)
-                self._rule_fired_int_mul[2] += 1
-                return
-            # mul_pow2_const: int_mul(x, C) => int_lshift(x, shift)
-            if C_arg_1 > 0 and C_arg_1 & intmask(r_uint(C_arg_1) - r_uint(1)) == 0:
-                shift = highest_bit(C_arg_1)
-                newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_0, ConstInt(shift)])
-                self.optimizer.send_extra_operation(newop)
-                self._rule_fired_int_mul[3] += 1
-                return
-        else:
-            arg_1_int_lshift = self.optimizer.as_operation(arg_1, rop.INT_LSHIFT)
-            if arg_1_int_lshift is not None:
-                arg_1_0 = get_box_replacement(arg_1_int_lshift.getarg(0))
-                b_arg_1_0 = self.getintbound(arg_1_0)
-                arg_1_1 = get_box_replacement(arg_1_int_lshift.getarg(1))
-                b_arg_1_1 = self.getintbound(arg_1_1)
-                if b_arg_1_0.is_constant():
-                    C_arg_1_0 = b_arg_1_0.get_constant_int()
-                    # mul_lshift: int_mul(x, int_lshift(1, y)) => int_lshift(x, y)
-                    if C_arg_1_0 == 1:
-                        if b_arg_1_1.known_ge_const(0) and b_arg_1_1.known_le_const(LONG_BIT):
-                            newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_0, arg_1_1])
-                            self.optimizer.send_extra_operation(newop)
-                            self._rule_fired_int_mul[4] += 1
-                            return
         return self.emit(op)
-
+               
     def postprocess_INT_MUL(self, op):
         b1 = self.getintbound(op.getarg(0))
         b2 = self.getintbound(op.getarg(1))
