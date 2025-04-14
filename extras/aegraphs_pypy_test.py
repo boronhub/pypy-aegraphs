@@ -271,7 +271,8 @@ class TestOptimizeIntBounds(BaseTestBasic):
         i4 = int_mul(2, i2)
         i5 = int_mul(i1, 32)
         i6 = int_mul(i1, i2)
-        jump(i5, i6)
+        i7 = int_mul(i6, -1)
+        jump(i5, i7)
         """
         expected = """
         [i1, i2]
@@ -279,6 +280,7 @@ class TestOptimizeIntBounds(BaseTestBasic):
         i4 = int_lshift(i2, 1)
         i5 = int_lshift(i1, 5)
         i6 = int_mul(i1, i2)
-        jump(i5, i6)
+        i7 = int_neg(i6)
+        jump(i5, i7)
         """
         self.optimize_loop(ops, expected)

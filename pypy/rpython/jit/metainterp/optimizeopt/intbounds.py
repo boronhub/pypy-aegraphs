@@ -189,14 +189,20 @@ class AEGraph(object):
                 elif (isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 1):
                     b = t[1]
                     self.union(self.add_term(b), eid)
+            if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul":
+                if (isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and t[1][1] == -1):
+                    b = t[2]
+                    self.union(self.neg(self.add_term(b)), eid)
+                elif (isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == -1):
+                    print("negmul rule")
+                    b = t[1]
+                    self.union(self.neg(self.add_term(b)), eid)
             if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul" and \
                 isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and (t[2][1] & intmask(r_uint(t[2][1]) - r_uint(1)) == 0) :
-                print("LSHIFT rule in aegraph")
                 a = t[1]
                 self.union(self.lshift(self.add_term(a), self.const(highest_bit(t[2][1]))), eid)
             if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul" and \
                 isinstance(t[2], tuple) and len(t[2]) == 2 and t[1][0] == "const" and (t[1][1] & intmask(r_uint(t[1][1]) - r_uint(1)) == 0) :
-                print("LSHIFT rule right in aegraph")
                 a = t[2]
                 self.union(self.lshift(self.add_term(a), self.const(highest_bit(t[1][1]))), eid) 
         return self.find(eid)
@@ -221,12 +227,8 @@ class AEGraph(object):
         return self.find(eid)
     
     def neg(self, x):
-        eid = self.add_enode(Enode("neg", x))
-        if isinstance(t, tuple) and len(t) == 2 and t[0] == "neg" and \
-                isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const":
-                x_val = t[1][1]
-                self.union(self.const(-x_val), eid)
-        return eid
+        eid = self.add_enode(Enode("neg", (x, )))
+        return self.find(eid)
         
 
     def div(self, x, y):
@@ -317,10 +319,10 @@ class OptIntBounds(Optimization):
             self.var_counter += 1
         
         mul_op = self.aegraph.mul(C_arg_0_aegraph, C_arg_1_aegraph)
-        print("AEGraph after MUL operation: ", self.aegraph)
+        #print("AEGraph after MUL operation: ", self.aegraph)
         extracted = list(self.aegraph.term_view(self.aegraph.find(mul_op), 10))[0]
+        print("Extracted: ", extracted)
         if extracted[0] == "lshift":  
-            print("LSHIFT RULE RR")
             if b_arg_0.is_constant():
                 newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_1, ConstInt(extracted[2][1])])
             elif b_arg_1.is_constant():
@@ -332,9 +334,16 @@ class OptIntBounds(Optimization):
             self.make_constant_int(op, const_val)
             print("aeval to constant")
             return
+        if extracted[0] == "neg":
+            if b_arg_0.is_constant() and b_arg_0.get_constant_int() == -1:
+                newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_1])
+            elif b_arg_1.is_constant():
+                newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_0])
+
+            self.optimizer.send_extra_operation(newop)
+            return
 
         self._rule_fired_int_mul[5] += 1
-        print("final_op rewrite = ", extracted)
         print("\n\n\n")
         return self.emit(op)
                
