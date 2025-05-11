@@ -2,21 +2,17 @@ use num::{ToPrimitive, Zero};
 use ruler::*;
 use z3::ast::Ast;
 
-type Constant = i64;
+type Constant = i32;
 
 egg::define_language! {
-    // todo:
-    // - rshift, lshift
-    // -
   pub enum Pred {
     Lit(Constant),
     "int_lt" = Lt([Id;2]),
     "int_le" = Leq([Id;2]),
     "int_eq" = Eq([Id;2]),
-    "int_neq" = Neq([Id;2]),
+    "int_ne" = Ne([Id;2]),
     "int_not" = Not(Id),
     "int_neg" = Neg(Id),
-    "int_abs" = Abs(Id),
     "int_and" = And([Id;2]),
     "int_or" = Or([Id;2]),
     "int_xor" = Xor([Id;2]),
@@ -24,10 +20,11 @@ egg::define_language! {
     "int_sub" = Sub([Id; 2]),
     "int_mul" = Mul([Id; 2]),
     "int_div" = Div([Id; 2]),
-    "int_min" = Min([Id; 2]),
-    "int_max" = Max([Id; 2]),
+    // TODO: Need investigating on Python behavior
+    // "int_abs" = Abs(Id),
     // "int_rshift" = RShift([Id; 2]),
     // "int_lshift" = LShift([Id; 2]),
+    // mul => implement checked mul because max/min seem to mess with mul
     Var(Symbol),
   }
 }
@@ -39,8 +36,8 @@ impl SynthLanguage for Pred {
     where
         F: FnMut(&'a Id) -> &'a CVec<Self>,
     {
-        let one = 1.to_i64().unwrap();
-        let zero = 0.to_i64().unwrap();
+        let one = 1.to_i32().unwrap();
+        let zero = 0.to_i32().unwrap();
         match self {
             Pred::Lit(c) => vec![Some(c.clone()); cvec_len],
             Pred::Lt([x, y]) => {
@@ -52,14 +49,14 @@ impl SynthLanguage for Pred {
             Pred::Eq([x, y]) => {
                 map!(get_cvec, x, y => if x == y {Some(one.clone())} else {Some(zero.clone())})
             }
-            Pred::Neq([x, y]) => {
+            Pred::Ne([x, y]) => {
                 map!(get_cvec, x, y => if x != y {Some(one.clone())} else {Some(zero.clone())})
             }
             Pred::Not(x) => {
                 map!(get_cvec, x => if x.clone() == zero { Some(one.clone())} else {Some(zero.clone())})
             }
-            Pred::Neg(x) => map!(get_cvec, x => Some(-x)),
-            Pred::Abs(x) => map!(get_cvec, x => Some(x.abs())),
+            Pred::Neg(x) => map!(get_cvec, x => x.checked_neg()),
+            // Pred::Abs(x) => map!(get_cvec, x => Some(x.abs())),
             // Pred::RShift([x, y]) => map!(get_cvec, x, y => Some(x >> y)),
             // Pred::LShift([x, y]) => map!(get_cvec, x, y => Some(x << y)),
             Pred::And([x, y]) => {
@@ -93,21 +90,21 @@ impl SynthLanguage for Pred {
                 x.checked_div(*y)
               }
             }),
-            Pred::Min([x, y]) => map!(get_cvec, x, y => Some(x.min(y).clone())),
-            Pred::Max([x, y]) => map!(get_cvec, x, y => Some(x.max(y).clone())),
             Pred::Var(_) => vec![],
         }
     }
 
     fn initialize_vars(egraph: &mut EGraph<Self, SynthAnalysis>, vars: &[String]) {
         let consts = vec![
-            Some((-10).to_i64().unwrap()),
-            Some((-1).to_i64().unwrap()),
-            Some(0.to_i64().unwrap()),
-            Some(1.to_i64().unwrap()),
-            Some(2.to_i64().unwrap()),
-            Some(5.to_i64().unwrap()),
-            Some(100.to_i64().unwrap()),
+            Some((-10).to_i32().unwrap()),
+            Some((-1).to_i32().unwrap()),
+            Some(0.to_i32().unwrap()),
+            Some(1.to_i32().unwrap()),
+            Some(2.to_i32().unwrap()),
+            Some(5.to_i32().unwrap()),
+            Some(100.to_i32().unwrap()),
+            Some(std::i64::MIN),
+            Some(std::i64::MAX),
         ];
         let cvecs = self_product(&consts, vars.len());
 
@@ -178,7 +175,7 @@ fn egg_to_z3<'a>(ctx: &'a z3::Context, expr: &[Pred]) -> z3::ast::Int<'a> {
                 let r = &buf[usize::from(*y)];
                 buf.push(z3::ast::Bool::ite(&z3::ast::Int::_eq(l, r), &one, &zero))
             }
-            Pred::Neq([x, y]) => {
+            Pred::Ne([x, y]) => {
                 let l = &buf[usize::from(*x)];
                 let r = &buf[usize::from(*y)];
                 buf.push(z3::ast::Bool::ite(&z3::ast::Int::_eq(l, r), &zero, &one))
@@ -187,14 +184,14 @@ fn egg_to_z3<'a>(ctx: &'a z3::Context, expr: &[Pred]) -> z3::ast::Int<'a> {
                 let l = &buf[usize::from(*x)];
                 buf.push(z3::ast::Bool::ite(&l._eq(&zero), &one, &zero))
             }
-            Pred::Abs(x) => {
+            /* Pred::Abs(x) => {
                 let l = &buf[usize::from(*x)];
                 buf.push(z3::ast::Bool::ite(
                     &l.ge(&zero),
                     &l,
                     &z3::ast::Int::unary_minus(&l),
                 ))
-            }
+            } */
             Pred::Neg(x) => buf.push(z3::ast::Int::unary_minus(&buf[usize::from(*x)])),
             Pred::And([x, y]) => {
                 let l = &buf[usize::from(*x)];
@@ -249,16 +246,6 @@ fn egg_to_z3<'a>(ctx: &'a z3::Context, expr: &[Pred]) -> z3::ast::Int<'a> {
                     &zero,
                     &z3::ast::Int::div(l, r),
                 ))
-            }
-            Pred::Min([x, y]) => {
-                let l = &buf[usize::from(*x)];
-                let r = &buf[usize::from(*y)];
-                buf.push(z3::ast::Bool::ite(&z3::ast::Int::le(l, r), l, r))
-            }
-            Pred::Max([x, y]) => {
-                let l = &buf[usize::from(*x)];
-                let r = &buf[usize::from(*y)];
-                buf.push(z3::ast::Bool::ite(&z3::ast::Int::le(l, r), r, l))
             }
             Pred::Var(v) => buf.push(z3::ast::Int::new_const(ctx, v.to_string())),
         }

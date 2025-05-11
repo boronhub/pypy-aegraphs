@@ -21,7 +21,8 @@ pub fn pypy_rules() -> Ruleset<Pred> {
         Lang::new(
             &["-1", "0", "1"],
             &["a", "b", "c"],
-            &[&["int_neg", "int_abs"], &["int_add", "int_sub", "int_mul", "int_min", "int_max"]],
+            //&[&["int_neg", "int_abs"], &["int_add", "int_sub", "int_mul", "int_min", "int_max"]],
+            &[&["int_neg"], &["int_add", "int_sub", "int_mul"]],
         ),
         all_rules.clone(),
     );
@@ -32,7 +33,8 @@ pub fn pypy_rules() -> Ruleset<Pred> {
         Lang::new(
             &["-1", "0", "1"],
             &["a", "b", "c"],
-            &[&["int_neg", "int_abs"], &["int_le", "int_le", "int_eq", "int_neq"], &[]],
+            //&[&["int_neg", "int_abs"], &["int_le", "int_le", "int_eq", "int_neq"], &[]],
+            &[&["int_neg"], &["int_le", "int_le", "int_eq", "int_ne"], &[]],
         ),
         all_rules.clone(),
     );
@@ -47,7 +49,7 @@ pub fn pypy_rules() -> Ruleset<Pred> {
             &[
                 &["int_neg", "int_not"],
                 &[
-                    "int_and", "int_or", "int_xor", "int_add", "int_sub", "int_mul", "int_min", "int_max", "int_le", "int_le", "int_eq", "int_neq",
+                    "int_and", "int_or", "int_xor", "int_add", "int_sub", "int_mul", "int_le", "int_le", "int_eq", "int_ne",
                 ],
                 &[],
             ],
@@ -58,7 +60,7 @@ pub fn pypy_rules() -> Ruleset<Pred> {
 
     let nested_bops_arith = Workload::new(&["(bop e e)", "v"])
         .plug("e", &Workload::new(&["(bop v v)", "(uop v)", "v"]))
-        .plug("bop", &Workload::new(&["int_add", "int_sub", "int_mul", "int_le", "int_max", "int_min"]))
+        .plug("bop", &Workload::new(&["int_add", "int_sub", "int_mul", "int_le"]))
         .plug("uop", &Workload::new(&["int_neg", "int_not"]))
         .plug("v", &Workload::new(&["a", "b", "c"]))
         .filter(Filter::Canon(vec![
@@ -78,7 +80,7 @@ pub fn pypy_rules() -> Ruleset<Pred> {
         .plug("e", &Workload::new(&["(bop v v)", "(uop v)", "v"]))
         .plug(
             "bop",
-            &Workload::new(&["int_and", "int_or", "int_neq", "int_le", "int_eq", "int_le", "int_max", "int_min"]),
+            &Workload::new(&["int_and", "int_or", "int_ne", "int_le", "int_eq", "int_le"]),
         )
         .plug("uop", &Workload::new(&["int_neg", "int_not"]))
         .plug("v", &Workload::new(&["a", "b", "c"]))

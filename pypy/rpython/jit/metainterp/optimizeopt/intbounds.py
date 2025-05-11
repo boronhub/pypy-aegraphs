@@ -194,7 +194,6 @@ class AEGraph(object):
                     b = t[2]
                     self.union(self.neg(self.add_term(b)), eid)
                 elif (isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == -1):
-                    print("negmul rule")
                     b = t[1]
                     self.union(self.neg(self.add_term(b)), eid)
             if isinstance(t, tuple) and len(t) == 3 and t[0] == "mul" and \
@@ -214,11 +213,11 @@ class AEGraph(object):
             isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and t[1][1] == 0:
                 b = t[2]
                 self.union(self.const(0), eid)
-            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "lshift" and \
+            if isinstance(t, tuple) and len(t) == 3 and t[0] == "lshift" and \
                 isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const" and t[2][1] == 0:
                 a = t[1]
                 self.union(self.add_term(a), eid)
-            elif isinstance(t, tuple) and len(t) == 3 and t[0] == "lshift" and \
+            if isinstance(t, tuple) and len(t) == 3 and t[0] == "lshift" and \
                 isinstance(t[1], tuple) and len(t[1]) == 2 and t[1][0] == "const" and \
                 isinstance(t[2], tuple) and len(t[2]) == 2 and t[2][0] == "const":
                 x_val = t[1][1]
@@ -257,6 +256,7 @@ def get_integer_max(is_unsigned, byte_size):
         return (1 << ((byte_size << 3) - 1)) - 1
 
 
+# add all program exprs to aegraph and extract in separate function?
 
 class OptIntBounds(Optimization):
     """Keeps track of the bounds placed on integers by guards and remove
@@ -321,7 +321,6 @@ class OptIntBounds(Optimization):
         mul_op = self.aegraph.mul(C_arg_0_aegraph, C_arg_1_aegraph)
         #print("AEGraph after MUL operation: ", self.aegraph)
         extracted = list(self.aegraph.term_view(self.aegraph.find(mul_op), 10))[0]
-        print("Extracted: ", extracted)
         if extracted[0] == "lshift":  
             if b_arg_0.is_constant():
                 newop = self.replace_op_with(op, rop.INT_LSHIFT, args=[arg_1, ConstInt(extracted[2][1])])
@@ -332,7 +331,6 @@ class OptIntBounds(Optimization):
         if extracted[0] == "const":
             const_val = list(self.aegraph.term_view(self.aegraph.find(mul_op), 10))[0][1]
             self.make_constant_int(op, const_val)
-            print("aeval to constant")
             return
         if extracted[0] == "neg":
             if b_arg_0.is_constant() and b_arg_0.get_constant_int() == -1:

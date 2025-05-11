@@ -181,35 +181,35 @@ class AEGraph(object):
                     and t[2][0] == "const"
                 ):
                     self.union(self.const(t[1][1] * t[2][1]), eid)
-                elif (
+                if (
                     t[0] == "mul"
                     and isinstance(t[1], tuple)
                     and t[1][0] == "const"
                     and t[1][1] == 0
                 ):
                     self.union(self.const(0), eid)
-                elif (
+                if (
                     t[0] == "mul"
                     and isinstance(t[2], tuple)
                     and t[2][0] == "const"
                     and t[2][1] == 0
                 ):
                     self.union(self.const(0), eid)
-                elif (
+                if (
                     t[0] == "mul"
                     and isinstance(t[1], tuple)
                     and t[1][0] == "const"
                     and t[1][1] == 1
                 ):
                     self.union(self.add_term(t[2]), eid)
-                elif (
+                if (
                     t[0] == "mul"
                     and isinstance(t[2], tuple)
                     and t[2][0] == "const"
                     and t[2][1] == 1
                 ):
                     self.union(self.add_term(t[1]), eid)
-                elif (
+                if (
                     t[0] == "mul"
                     and isinstance(t[2], tuple)
                     and t[2][0] == "const"
@@ -229,14 +229,14 @@ class AEGraph(object):
                     and t[1][1] == 0
                 ):
                     self.union(self.const(0), eid)
-                elif (
+                if (
                     t[0] == "lshift"
                     and isinstance(t[2], tuple)
                     and t[2][0] == "const"
                     and t[2][1] == 0
                 ):
                     self.union(self.add_term(t[1]), eid)
-                elif (
+                if (
                     t[0] == "lshift"
                     and isinstance(t[1], tuple)
                     and t[1][0] == "const"

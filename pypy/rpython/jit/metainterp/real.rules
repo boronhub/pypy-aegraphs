@@ -342,6 +342,10 @@ int_neg_int_neg : int_neg(int_neg(a))
 => a
 
 
+int_neg_int_neg : a 
+=> int_neg(int_neg(a))
+
+
 int_or_int_and : int_or(a, a) 
 => int_and(a, a)
 
@@ -358,16 +362,32 @@ int_sub_0 : int_sub(a, 0)
 => a
 
 
+int_sub_0 : a 
+=> int_sub(a, 0)
+
+
 int_add_0 : int_add(a, 0) 
 => a
+
+
+int_add_0 : a 
+=> int_add(a, 0)
 
 
 int_mul_1 : int_mul(a, 1) 
 => a
 
 
+int_mul_1 : a 
+=> int_mul(a, 1)
+
+
 int_lshift_0 : int_lshift(a, 0) 
 => a
+
+
+int_lshift_0 : a 
+=> int_lshift(a, 0)
 
 
 int_sub_0_int_neg : int_sub(0, a) 

@@ -1,13 +1,17 @@
+import sys
+
 def lift_rule(s_expression: str) -> str:
     s_expression = s_expression.strip()
     bi_dir = False
-    if "<=>" in s_expression:
+    """ if "<=>" in s_expression:
         lhs, rhs = s_expression.split("<=>")
         bi_dir = True
     elif "==>" in s_expression:
         lhs, rhs = s_expression.split("==>")
     else:
-        raise ValueError("Invalid rule format. Expected '<=>' or '==>'")
+        raise ValueError("Invalid rule format. Expected '<=>' or '==>'")"""
+    lhs, rhs = s_expression.split("==>")
+    
     rule_name = "_"
     operators_and_consts = []
 
@@ -41,19 +45,25 @@ def lift_rule(s_expression: str) -> str:
     lhs_parsed = parse_expression(lhs.strip())
     rhs_parsed = parse_expression(rhs.strip())
     name = "_".join(operators_and_consts)
-    if bi_dir:
+    #print("Is bi_dir: ", bi_dir)
+    rule = f"{name} : {lhs_parsed} \n=> {rhs_parsed}"
+    """ if bi_dir:
         rule = f"{name} : {lhs_parsed} \n=> {rhs_parsed}\n{name} : {rhs_parsed} => {lhs_parsed}"
     else:
-        rule = f"{name} : {lhs_parsed} \n=> {rhs_parsed}"
+        rule = f"{name} : {lhs_parsed} \n=> {rhs_parsed}" """
+    if len(lhs_parsed) == 1:
+        return
     return rule
 
 
 try:
-    with open("gen_pypy_int_rules_a5.rules", "r") as source_file, open(
-        "real.rules", "w"
+    with open(sys.argv[1], "r") as source_file, open(
+        "./real.rules", "w"
     ) as destination_file:
         for line in source_file:
-            destination_file.write(lift_rule(line))
-            destination_file.write("\n\n\n")
+            lifted = lift_rule(line)
+            if lifted is not None:
+                destination_file.write(lift_rule(line))
+                destination_file.write("\n\n\n")
 except FileNotFoundError:
     print("The source file was not found.")

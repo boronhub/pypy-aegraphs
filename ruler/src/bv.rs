@@ -41,6 +41,10 @@ impl<const N: Inner> BV<N> {
         Self::new(self.0.wrapping_neg())
     }
 
+    pub fn wrapping_shl(self, rhs: Self) -> Self {
+        Self::new(self.0.wrapping_shl(rhs.0 as u32))
+    }
+
     pub fn my_shl(self, rhs: Self) -> Self {
         if rhs.0 >= N {
             Self::ZERO
@@ -142,16 +146,16 @@ macro_rules! impl_bv {
 
         egg::define_language! {
           pub enum Bv {
-                  "+" = Add([Id; 2]),
-                  "--" = Sub([Id; 2]),
-                  "*" = Mul([Id; 2]),
-                  "-" = Neg(Id),
-                  "~" = Not(Id),
-                  "<<" = Shl([Id; 2]),
-                  ">>" = Shr([Id; 2]),
-                  "&" = And([Id; 2]),
-                  "|" = Or([Id; 2]),
-                  "^" = Xor([Id; 2]),
+                  "int_add" = Add([Id; 2]),
+                  "int_sub" = Sub([Id; 2]),
+                  "int_mul" = Mul([Id; 2]),
+                  "int_neg" = Neg(Id),
+                  "int_not" = Not(Id),
+                  "int_lshift" = Shl([Id; 2]),
+                  "int_rshift" = Shr([Id; 2]),
+                  "int_and" = And([Id; 2]),
+                  "int_or" = Or([Id; 2]),
+                  "int_xor" = Xor([Id; 2]),
                   Lit(BV),
                   Var(egg::Symbol),
               }
@@ -166,18 +170,29 @@ macro_rules! impl_bv {
             {
                 match self {
                     Bv::Neg(a) => map!(get_cvec, a => Some(a.wrapping_neg())),
-                    Bv::Not(a) => map!(get_cvec, a => Some(a.not())),
+                    // Bv::Not(a) => map!(get_cvec, a => Some(a.not())),
+                    Bv::Not(a) => {
+                        map!(get_cvec, a => if (a.clone() == BV::ZERO) { Some(BV::ALL_ONES)} else {Some(BV::ZERO)})
+                    }
 
                     Bv::Add([a, b]) => map!(get_cvec, a, b => Some(a.wrapping_add(*b))),
                     Bv::Sub([a, b]) => map!(get_cvec, a, b => Some(a.wrapping_sub(*b))),
                     Bv::Mul([a, b]) => map!(get_cvec, a, b => Some(a.wrapping_mul(*b))),
 
-                    Bv::Shl([a, b]) => map!(get_cvec, a, b => Some(a.my_shl(*b))),
+                    Bv::Shl([a, b]) => map!(get_cvec, a, b => Some(a.wrapping_shl(*b))),
                     Bv::Shr([a, b]) => map!(get_cvec, a, b => Some(a.my_shr(*b))),
 
-                    Bv::And([a, b]) => map!(get_cvec, a, b => Some(*a & *b)),
-                    Bv::Or([a, b]) => map!(get_cvec, a, b => Some(*a | *b)),
-                    Bv::Xor([a, b]) => map!(get_cvec, a, b => Some(*a ^ *b)),
+                    Bv::And([a, b]) => {
+                        map!(get_cvec, a, b => if (a.clone() != BV::ZERO) && (b.clone() != BV::ZERO) { Some(BV::ALL_ONES)} else {Some(BV::ZERO)})
+                    }
+
+                    Bv::Or([a, b]) => {
+                        map!(get_cvec, a, b => if (a.clone() != BV::ZERO) || (b.clone() != BV::ZERO) { Some(BV::ALL_ONES)} else {Some(BV::ZERO)})
+                    }
+
+                    Bv::Xor([a, b]) => {
+                        map!(get_cvec, a, b => if (a.clone() == BV::ALL_ONES) ^ (b.clone() == BV::ALL_ONES) { Some(BV::ALL_ONES)} else {Some(BV::ZERO)})
+                    }
 
                     Bv::Lit(n) => vec![Some(n.clone()); cvec_len],
                     Bv::Var(_) => vec![],
@@ -247,6 +262,9 @@ macro_rules! impl_bv {
 
                 fn egg_to_z3<'a>(ctx: &'a z3::Context, expr: &[Bv]) -> z3::ast::BV<'a> {
                     let mut buf: Vec<z3::ast::BV> = vec![];
+                    let zero = z3::ast::BV::from_u64(ctx, 0, $n);
+                    let one = z3::ast::BV::from_u64(ctx, 1, $n);
+                    let n_bv = z3::ast::BV::from_u64(ctx, $n, $n);
                     for node in expr.as_ref().iter() {
                         match node {
                             Bv::Var(v) => buf.push(z3::ast::BV::new_const(&ctx, v.to_string(), $n)),
@@ -254,12 +272,53 @@ macro_rules! impl_bv {
                             Bv::Add([a, b]) => buf.push(buf[usize::from(*a)].bvadd(&buf[usize::from(*b)])),
                             Bv::Sub([a, b]) => buf.push(buf[usize::from(*a)].bvsub(&buf[usize::from(*b)])),
                             Bv::Mul([a, b]) => buf.push(buf[usize::from(*a)].bvmul(&buf[usize::from(*b)])),
-                            Bv::Shl([a, b]) => buf.push(buf[usize::from(*a)].bvshl(&buf[usize::from(*b)])),
-                            Bv::Shr([a, b]) => buf.push(buf[usize::from(*a)].bvlshr(&buf[usize::from(*b)])),
-                            Bv::And([a, b]) => buf.push(buf[usize::from(*a)].bvand(&buf[usize::from(*b)])),
-                            Bv::Or([a, b]) => buf.push(buf[usize::from(*a)].bvor(&buf[usize::from(*b)])),
-                            Bv::Xor([a, b]) => buf.push(buf[usize::from(*a)].bvxor(&buf[usize::from(*b)])),
-                            Bv::Not(a) => buf.push(buf[usize::from(*a)].bvnot()),
+                            Bv::Shl([a, b]) => {
+                                let l = &buf[usize::from(*a)];
+                                let r = &buf[usize::from(*b)];
+                                buf.push(l.bvshl(r))
+                            },
+                            Bv::Shr([a, b]) => {
+                                let l = &buf[usize::from(*a)];
+                                let r = &buf[usize::from(*b)];
+                                buf.push(l.bvashr(r))
+                            }
+                            Bv::And([x, y]) => {
+                                let l = &buf[usize::from(*x)];
+                                let r = &buf[usize::from(*y)];
+                                let l_not_z = z3::ast::Bool::not(&l._eq(&zero));
+                                let r_not_z = z3::ast::Bool::not(&r._eq(&zero));
+                                buf.push(z3::ast::Bool::ite(
+                                    &z3::ast::Bool::and(ctx, &[&l_not_z, &r_not_z]),
+                                    &one,
+                                    &zero,
+                                ))
+                            }
+                            Bv::Or([x, y]) => {
+                                let l = &buf[usize::from(*x)];
+                                let r = &buf[usize::from(*y)];
+                                let l_not_z = z3::ast::Bool::not(&l._eq(&zero));
+                                let r_not_z = z3::ast::Bool::not(&r._eq(&zero));
+                                buf.push(z3::ast::Bool::ite(
+                                    &z3::ast::Bool::or(ctx, &[&l_not_z, &r_not_z]),
+                                    &one,
+                                    &zero,
+                                ))
+                            }
+                            Bv::Xor([x, y]) => {
+                                let l = &buf[usize::from(*x)];
+                                let r = &buf[usize::from(*y)];
+                                let l_not_z = z3::ast::Bool::not(&l._eq(&zero));
+                                let r_not_z = z3::ast::Bool::not(&r._eq(&zero));
+                                buf.push(z3::ast::Bool::ite(
+                                    &z3::ast::Bool::xor(&l_not_z, &r_not_z),
+                                    &one,
+                                    &zero,
+                                ))
+                            }
+                            Bv::Not(x) => {
+                                let l = &buf[usize::from(*x)];
+                                buf.push(z3::ast::Bool::ite(&l._eq(&zero), &one, &zero))
+                            }
                             Bv::Neg(a) => buf.push(buf[usize::from(*a)].bvneg()),
                         }
                     }

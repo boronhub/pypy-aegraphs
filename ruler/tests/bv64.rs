@@ -4,14 +4,11 @@
 
 ruler::impl_bv!(64);
 
-#[path = "./recipes/bv4_fancy.rs"]
-pub mod bv4_fancy;
-
 #[cfg(test)]
 pub mod test {
     use std::time::{Duration, Instant};
 
-    use crate::bv4_fancy::bv4_fancy_rules;
+    // use crate::bv4_fancy::bv4_fancy_rules;
 
     use ruler::{
         enumo::{self, Filter, Ruleset, Workload},
@@ -28,7 +25,8 @@ pub mod test {
         let lang = Lang::new(
             &["0", "1"],
             &["a", "b", "c"],
-            &[&["~", "-"], &["&", "|", "*", "--", "+", "<<", ">>"]],
+            // &[&["int_not", "int_neg"], &["int_and", "int_or", "int_mul", "int_sub", "int_add", "int_lshift", "int_rshift"]],
+            &[&["int_neg"], &["int_and", "int_or", "int_mul", "int_sub", "int_add", "int_lshift"]],
         );
         rules.extend(recursive_rules(
             enumo::Metric::Atoms,
@@ -65,12 +63,12 @@ pub mod test {
     fn compare() {
         let domain = "BV64";
         // Port the bv4 rules into domain
-        let actual_bv4_rules: Ruleset<_> = bv4_fancy_rules();
-        let ported_bv4_rules: Ruleset<Bv> = Ruleset::new(actual_bv4_rules.to_str_vec());
+        // let actual_bv4_rules: Ruleset<_> = bv4_fancy_rules();
+        // let ported_bv4_rules: Rulese"int_not", t<Bv> = Ruleset::new(actual_bv4_rules.to_str_vec());
 
         // Generate the rules directly
         let (gen, gen_time): (Ruleset<Bv>, Duration) = gen();
-
-        logger::write_bv_derivability(domain, gen, gen_time, ported_bv4_rules)
+        gen.to_file("rules/gen_pypy_int_rules_from_bv.rules");
+        // logger::write_bv_derivability(domain, gen, gen_time, ported_bv4_rules)
     }
 }

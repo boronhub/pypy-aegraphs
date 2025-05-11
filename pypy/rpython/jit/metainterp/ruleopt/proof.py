@@ -132,13 +132,13 @@ def z3_expression(opname, arg0, arg1=None):
         expr = z3_cond(z3.Xor(arg0 != FALSEBV ,arg1 != FALSEBV))
     elif opname == "int_lshift":
         expr = arg0 << arg1
-        valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
+        #valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
     elif opname == "int_rshift":
         expr = arg0 >> arg1
-        valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
+        #valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
     elif opname == "uint_rshift":
         expr = z3.LShR(arg0, arg1)
-        valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
+        #valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
     elif opname == "uint_mul_high":
         # zero-extend args to 2*LONG_BIT bit, then multiply and extract
         # highest LONG_BIT bits

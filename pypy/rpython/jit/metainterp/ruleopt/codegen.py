@@ -276,7 +276,9 @@ class Codegen(parse.Visitor):
                 elif isinstance(arg, parse.PatternConst):
                     args.append("ConstInt(%s)" % arg.const)
                 else:
+                    print("Errant arg: ", arg, "\n\n in ", target)
                     assert 0
+            print("Complete Args: ", args)
             self.emit(
                 "newop = self.replace_op_with(op, rop.%s, args=[%s])"
                 % (target.opname.upper(), ", ".join(args))
