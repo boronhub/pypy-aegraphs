@@ -1,7 +1,0 @@
-- [x] generate integer rules in Enumo
-- [x] parse enumo rules and lift named rules to PyPy DSL
-- [ ] test new rules with existing PyPy RPython rule generator
-    - [ ] change current z3 expression emitter in  `proof.py` to have full z3 exprs
-- [ ] modify `intbounds.py` to AEGraph implementation
-- [ ] autogenerate AEgraph python implementation with smart constructors
-- [ ] update rule application in PyPy `optimizeopt` to use AEgraph implementation
